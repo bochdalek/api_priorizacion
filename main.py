@@ -1,0 +1,102 @@
+import ssl
+import joblib
+import numpy as np
+from fastapi import FastAPI
+from pydantic import BaseModel
+from datetime import datetime, timedelta
+from typing import Literal
+
+# Asegurar compatibilidad con SSL
+ssl._create_default_https_context = ssl._create_unverified_context
+
+# Cargar el modelo entrenado con manejo de errores
+try:
+    model = joblib.load("prioritization_model.pkl")
+except FileNotFoundError:
+    model = None
+    print("⚠️ Error: El archivo prioritization_model.pkl no se encontró. Asegúrate de que el modelo está en la carpeta correcta.")
+
+# Crear la API
+app = FastAPI()
+
+# Definir la estructura de datos esperada
+class CaseData(BaseModel):
+    urgency: int
+    time_since_injury: int
+    functional_impact: int
+    patient_condition: int
+    medication: Literal["Ninguna", "Antiagregante", "Anticoagulante", "AAS", "Clopidogrel", "Prasugrel", "Ticagrelor",
+                        "Acenocumarol", "Warfarina", "Dabigatrán", "Rivaroxabán", "Apixabán", "Edoxabán"]
+    last_medication_date: str
+    delay_days: int
+    surgery_type: int = 2  # Valor predeterminado
+    operating_room: int = 1  # Valor predeterminado
+
+# Mapeo de medicamentos a valores numéricos
+medication_map = {
+    "Ninguna": 0,
+    "Antiagregante": 1,
+    "Anticoagulante": 2,
+    "AAS": 3,
+    "Clopidogrel": 4,
+    "Prasugrel": 5,
+    "Ticagrelor": 6,
+    "Acenocumarol": 7,
+    "Warfarina": 8,
+    "Dabigatrán": 9,
+    "Rivaroxabán": 10,
+    "Apixabán": 11,
+    "Edoxabán": 12
+}
+
+# Mapeo de días de suspensión según el medicamento
+medication_suspension_days = {
+    "AAS": 1,  # En monoterapia, 24h antes
+    "Clopidogrel": 5,
+    "Prasugrel": 7,
+    "Ticagrelor": 5,
+    "Acenocumarol": 3,
+    "Warfarina": 5,
+    "Dabigatrán": 3,
+    "Rivaroxabán": 2,
+    "Apixabán": 2,
+    "Edoxabán": 2,
+}
+
+@app.post("/predict_surgery_date")
+def predict_surgery_date(case: CaseData):
+    try:
+        # Determinar días de suspensión necesarios
+        suspension_days = medication_suspension_days.get(case.medication, 0)
+        
+        # Calcular fecha óptima para cirugía
+        last_med_date = datetime.strptime(case.last_medication_date, "%Y-%m-%d")
+        surgery_date = last_med_date + timedelta(days=suspension_days)
+        
+        return {"surgery_date": surgery_date.strftime("%Y-%m-%d")}
+    except Exception as e:
+        return {"error": f"Error en el cálculo de la fecha de cirugía: {str(e)}"}
+
+@app.post("/predict_priority")
+def predict_priority(case: CaseData):
+    if model is None:
+        return {"error": "Modelo no encontrado. No se puede predecir prioridad."}
+    try:
+        medication_value = medication_map.get(case.medication, -1)  # Convertir medicamento a número
+        
+        # Preparar los datos para el modelo
+        input_data = np.array([[case.urgency, case.time_since_injury, case.functional_impact,
+                                 case.patient_condition, medication_value, case.delay_days, case.surgery_type, case.operating_room]])
+        
+        # Obtener predicción de prioridad
+        predicted_priority = model.predict(input_data)[0]
+        
+        # Mapeo inverso para devolver un texto
+        priority_map = {3: "Urgente", 2: "Alta", 1: "Media", 0: "Baja"}
+        return {"priority": priority_map[predicted_priority]}
+    except Exception as e:
+        return {"error": f"Error en la predicción de prioridad: {str(e)}"}
+
+@app.get("/")
+def root():
+    return {"message": "API de planificación quirúrgica en funcionamiento"}
