@@ -1,11 +1,11 @@
 import ssl
 import joblib
-import np
+import numpy as np
 import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, validator
 from datetime import datetime, timedelta
-from typing import Literal, List, Optional
+from typing import Literal, List, Dict, Optional
 
 # Configurar logging para depuración
 logging.basicConfig(level=logging.INFO)
@@ -54,36 +54,28 @@ class CaseData(BaseModel):
             raise ValueError("Formato de fecha inválido, debe ser YYYY-MM-DD")
         return v
 
-def find_patient(patient_id: int):
-    """Función para encontrar un paciente en la lista de no programables.""" un paciente en la lista de no programables."""
-    return next((p for p in no_programables if p.id == patient_id), None)s if p.id == patient_id), None)
-
 # Endpoint para registrar pacientes como NO PROGRAMABLES
 @app.post("/no_programables")
-def add_no_programable(patient: CaseData):def add_no_programable(patient: CaseData):
+def add_no_programable(patient: CaseData):
     no_programables.append(patient)
-    logging.info(f"🛑 Paciente {patient.id} agregado a NO PROGRAMABLES por: {patient.condition_reason}")gregado a NO PROGRAMABLES por: {patient.condition_reason}")
-    return {"message": "Paciente agregado a NO PROGRAMABLES", "patient": patient.dict()} a NO PROGRAMABLES", "patient": patient.dict()}
+    logging.info(f"🛑 Paciente {patient.id} agregado a NO PROGRAMABLES por: {patient.condition_reason}")
+    return {"message": "Paciente agregado a NO PROGRAMABLES", "patient": patient.dict()}
 
-# Endpoint para marcar a un paciente como programable y recalcular quirófanoss
-@app.post("/marcar_programable/{patient_id}").post("/marcar_programable/{patient_id}")
-def mark_as_programable(patient_id: int):able(patient_id: int):
+# Endpoint para marcar a un paciente como programable y recalcular quirófanos
+@app.post("/marcar_programable/{patient_id}")
+def mark_as_programable(patient_id: int):
     global no_programables
-    patient = find_patient(patient_id)patient = find_patient(patient_id)
+    patient = next((p for p in no_programables if p.id == patient_id), None)
     
     if not patient:
-        raise HTTPException(status_code=404, detail="Paciente no encontrado en NO PROGRAMABLES")    raise HTTPException(status_code=404, detail="Paciente no encontrado en NO PROGRAMABLES")
+        raise HTTPException(status_code=404, detail="Paciente no encontrado en NO PROGRAMABLES")
     
     no_programables = [p for p in no_programables if p.id != patient_id]
-    logging.info(f"✅ Paciente {patient_id} marcado como PROGRAMABLE")    logging.info(f"✅ Paciente {patient_id} marcado como PROGRAMABLE")
+    logging.info(f"✅ Paciente {patient_id} marcado como PROGRAMABLE")
     
-    # Aquí podemos agregar lógica para reprogramar automáticamente al paciente en quirófanospodemos agregar lógica para reprogramar automáticamente al paciente en quirófanos
+    # Aquí podemos agregar lógica para reprogramar automáticamente al paciente en quirófanos
     return {"message": "Paciente marcado como PROGRAMABLE y reasignado"}
 
-
-
-
-
-    return {"message": "API de planificación quirúrgica en funcionamiento"}def root():@app.get("/")@app.get("/")
+@app.get("/")
 def root():
     return {"message": "API de planificación quirúrgica en funcionamiento"}
