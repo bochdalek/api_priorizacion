@@ -62,55 +62,35 @@ app = FastAPI(
     swagger_ui_oauth2_redirect_url="/docs/oauth2-redirect",
 )
 
-# Modelos para planificación quirúrgica
-class CaseData(BaseModel):
-    urgency: int = Field(..., ge=0, le=5, strict=True)
-    time_since_injury: int = Field(..., ge=0, le=4, strict=True)
-    functional_impact: int = Field(..., ge=0, le=3, strict=True)
-    patient_condition: int = Field(..., ge=0, le=2, strict=True)
-    medication: str
-    last_medication_date: str
-    delay_days: int = Field(..., ge=0, le=6, strict=True)
-    surgery_type: int = Field(2, ge=0, le=2, strict=True)
-    operating_room: int = Field(1, ge=0, le=2, strict=True)
+# Modelos para autenticación
+class User(BaseModel):
+    email: str
+    password: str
 
-class SurgeryScheduleRequest(BaseModel):
-    scheduled_patients: List[CaseData]
-    available_or_morning: int = 2
-    available_or_afternoon: int = 1
-    max_patients_per_session: int = 2
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
-@app.post("/generate_schedule")
-def generate_schedule(request: SurgeryScheduleRequest):
-    try:
-        morning_surgeries = []
-        afternoon_surgeries = []
-        waiting_list = []
+# Endpoint para login
+@app.post("/login", response_model=Token, tags=["Auth"])
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = users_db.get(form_data.username)
+    if not user or not bcrypt.checkpw(form_data.password.encode(), user["hashed_password"].encode()):
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    access_token = jwt.encode({"sub": form_data.username, "role": user["role"]}, SECRET_KEY, algorithm=ALGORITHM)
+    return {"access_token": access_token, "token_type": "bearer"}
 
-        for patient in request.scheduled_patients:
-            if patient.surgery_type == 2:  # Fracturas de cadera
-                if len(afternoon_surgeries) < request.available_or_afternoon * request.max_patients_per_session:
-                    afternoon_surgeries.append(patient)
-                else:
-                    waiting_list.append(patient)
-            else:
-                if len(morning_surgeries) < request.available_or_morning * request.max_patients_per_session:
-                    morning_surgeries.append(patient)
-                else:
-                    waiting_list.append(patient)
-
-        return {
-            "morning_surgeries": [p.dict() for p in morning_surgeries],
-            "afternoon_surgeries": [p.dict() for p in afternoon_surgeries],
-            "waiting_list": [p.dict() for p in waiting_list]
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error en la generación de la programación: {str(e)}")
-
-# Endpoint para acceso restringido solo a administradores
-@app.get("/admin-only", tags=["Admin"], dependencies=[Depends(oauth2_scheme)])
-def admin_only():
-    return {"message": "Bienvenido, administrador"}
+# Endpoint para registrar un nuevo usuario
+@app.post("/register", tags=["Auth"])
+def register(user: User):
+    if user.email in users_db:
+        raise HTTPException(status_code=400, detail="El usuario ya existe")
+    users_db[user.email] = {
+        "username": user.email.split("@")[0],
+        "hashed_password": bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode(),
+        "role": "user"
+    }
+    return {"message": "Usuario registrado exitosamente"}
 
 # Endpoint para convertir un usuario en administrador (solo accesible por admins)
 @app.post("/make_admin/{email}", tags=["Admin"], dependencies=[Depends(oauth2_scheme)])
@@ -119,6 +99,16 @@ def make_admin(email: str):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     users_db[email]["role"] = "admin"
     return {"message": f"El usuario {email} ahora es administrador"}
+
+# Endpoint para acceder solo como administrador
+@app.get("/admin-only", tags=["Admin"], dependencies=[Depends(oauth2_scheme)])
+def admin_only():
+    return {"message": "Bienvenido, administrador"}
+
+# Endpoint de planificación quirúrgica
+@app.post("/generate_schedule")
+def generate_schedule(request: List[dict]):
+    return {"message": "Generación de planificación en desarrollo", "data": request}
 
 # Endpoint de prueba
 @app.get("/")
