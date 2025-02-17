@@ -1,10 +1,14 @@
 import ssl
 import joblib
 import numpy as np
+import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, validator
 from datetime import datetime, timedelta
 from typing import Literal
+
+# Configurar logging para depuración
+logging.basicConfig(level=logging.INFO)
 
 # Asegurar compatibilidad con SSL
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -14,31 +18,33 @@ try:
     model = joblib.load("prioritization_model.pkl")
 except FileNotFoundError:
     model = None
-    print("⚠️ Error: El archivo prioritization_model.pkl no se encontró. Asegúrate de que el modelo está en la carpeta correcta.")
+    logging.error("⚠️ Error: El archivo prioritization_model.pkl no se encontró. Asegúrate de que el modelo está en la carpeta correcta.")
 except Exception as e:
     model = None
-    print(f"⚠️ Error al cargar el modelo: {str(e)}")
+    logging.error(f"⚠️ Error al cargar el modelo: {str(e)}")
 
 # Crear la API
 app = FastAPI()
 
 # Definir la estructura de datos esperada para predict_priority
 class CaseData(BaseModel):
-    urgency: int = Field(..., ge=0, le=5)
-    time_since_injury: int = Field(..., ge=0, le=4)
-    functional_impact: int = Field(..., ge=0, le=3)
-    patient_condition: int = Field(..., ge=0, le=2)
+    urgency: int = Field(..., ge=0, le=5, strict=True)
+    time_since_injury: int = Field(..., ge=0, le=4, strict=True)
+    functional_impact: int = Field(..., ge=0, le=3, strict=True)
+    patient_condition: int = Field(..., ge=0, le=2, strict=True)
     medication: Literal["Ninguna", "Antiagregante", "Anticoagulante", "AAS", "Clopidogrel", "Prasugrel", "Ticagrelor",
                         "Acenocumarol", "Warfarina", "Dabigatrán", "Rivaroxabán", "Apixabán", "Edoxabán"]
     last_medication_date: str
-    delay_days: int = Field(..., ge=0, le=6)
-    surgery_type: int = Field(2, ge=0, le=2)  # Valor predeterminado
-    operating_room: int = Field(1, ge=0, le=2)  # Valor predeterminado
+    delay_days: int = Field(..., ge=0, le=6, strict=True)
+    surgery_type: int = Field(2, ge=0, le=2, strict=True)  # Valor predeterminado
+    operating_room: int = Field(1, ge=0, le=2, strict=True)  # Valor predeterminado
 
     @validator("last_medication_date")
     def validate_date(cls, v):
         try:
-            datetime.strptime(v, "%Y-%m-%d")
+            date_obj = datetime.strptime(v, "%Y-%m-%d")
+            if date_obj > datetime.now():
+                raise ValueError("La fecha no puede ser en el futuro")
         except ValueError:
             raise ValueError("Formato de fecha inválido, debe ser YYYY-MM-DD")
         return v
@@ -52,7 +58,9 @@ class SurgeryDateRequest(BaseModel):
     @validator("last_medication_date")
     def validate_date(cls, v):
         try:
-            datetime.strptime(v, "%Y-%m-%d")
+            date_obj = datetime.strptime(v, "%Y-%m-%d")
+            if date_obj > datetime.now():
+                raise ValueError("La fecha no puede ser en el futuro")
         except ValueError:
             raise ValueError("Formato de fecha inválido, debe ser YYYY-MM-DD")
         return v
@@ -107,7 +115,10 @@ def predict_priority(case: CaseData):
     if model is None:
         raise HTTPException(status_code=500, detail="Modelo no encontrado. No se puede predecir prioridad.")
     try:
-        medication_value = medication_map.get(case.medication, -1)  # Convertir medicamento a número
+        medication_value = medication_map.get(case.medication, -1)
+        
+        if medication_value == -1:
+            raise HTTPException(status_code=400, detail=f"Medicamento no reconocido: {case.medication}")
         
         # Preparar los datos para el modelo
         input_data = np.array([[case.urgency, case.time_since_injury, case.functional_impact,
