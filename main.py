@@ -5,7 +5,7 @@ import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, validator
 from datetime import datetime, timedelta
-from typing import Literal
+from typing import Literal, List, Dict, Optional
 
 # Configurar logging para depuración
 logging.basicConfig(level=logging.INFO)
@@ -49,89 +49,46 @@ class CaseData(BaseModel):
             raise ValueError("Formato de fecha inválido, debe ser YYYY-MM-DD")
         return v
 
-# Definir la estructura de datos esperada para predict_surgery_date
-class SurgeryDateRequest(BaseModel):
-    medication: Literal["AAS", "Clopidogrel", "Prasugrel", "Ticagrelor",
-                        "Acenocumarol", "Warfarina", "Dabigatrán", "Rivaroxabán", "Apixabán", "Edoxabán"]
-    last_medication_date: str
+# Definir la estructura de datos esperada para la programación quirúrgica
+class SurgeryScheduleRequest(BaseModel):
+    scheduled_patients: List[CaseData]
+    available_or_morning: int = 2
+    available_or_afternoon: int = 1
+    max_patients_per_session: int = 2
 
-    @validator("last_medication_date")
-    def validate_date(cls, v):
-        try:
-            date_obj = datetime.strptime(v, "%Y-%m-%d")
-            if date_obj > datetime.now():
-                raise ValueError("La fecha no puede ser en el futuro")
-        except ValueError:
-            raise ValueError("Formato de fecha inválido, debe ser YYYY-MM-DD")
-        return v
-
-# Mapeo de medicamentos a valores numéricos
-medication_map = {
-    "Ninguna": 0,
-    "Antiagregante": 1,
-    "Anticoagulante": 2,
-    "AAS": 3,
-    "Clopidogrel": 4,
-    "Prasugrel": 5,
-    "Ticagrelor": 6,
-    "Acenocumarol": 7,
-    "Warfarina": 8,
-    "Dabigatrán": 9,
-    "Rivaroxabán": 10,
-    "Apixabán": 11,
-    "Edoxabán": 12
-}
-
-# Mapeo de días de suspensión según el medicamento
-medication_suspension_days = {
-    "AAS": 1,  # En monoterapia, 24h antes
-    "Clopidogrel": 5,
-    "Prasugrel": 7,
-    "Ticagrelor": 5,
-    "Acenocumarol": 3,
-    "Warfarina": 5,
-    "Dabigatrán": 3,
-    "Rivaroxabán": 2,
-    "Apixabán": 2,
-    "Edoxabán": 2,
-}
-
-@app.post("/predict_surgery_date")
-def predict_surgery_date(request: SurgeryDateRequest):
+@app.post("/generate_schedule")
+def generate_schedule(request: SurgeryScheduleRequest):
     try:
-        # Determinar días de suspensión necesarios
-        suspension_days = medication_suspension_days.get(request.medication, 0)
-        
-        # Calcular fecha óptima para cirugía
-        last_med_date = datetime.strptime(request.last_medication_date, "%Y-%m-%d")
-        surgery_date = last_med_date + timedelta(days=suspension_days)
-        
-        return {"surgery_date": surgery_date.strftime("%Y-%m-%d")}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error en el cálculo de la fecha de cirugía: {str(e)}")
+        morning_surgeries = []
+        afternoon_surgeries = []
+        waiting_list = []
 
-@app.post("/predict_priority")
-def predict_priority(case: CaseData):
-    if model is None:
-        raise HTTPException(status_code=500, detail="Modelo no encontrado. No se puede predecir prioridad.")
-    try:
-        medication_value = medication_map.get(case.medication, -1)
-        
-        if medication_value == -1:
-            raise HTTPException(status_code=400, detail=f"Medicamento no reconocido: {case.medication}")
-        
-        # Preparar los datos para el modelo
-        input_data = np.array([[case.urgency, case.time_since_injury, case.functional_impact,
-                                 case.patient_condition, medication_value, case.delay_days, case.surgery_type, case.operating_room]])
-        
-        # Obtener predicción de prioridad
-        predicted_priority = model.predict(input_data)[0]
-        
-        # Mapeo inverso para devolver un texto
-        priority_map = {3: "Urgente", 2: "Alta", 1: "Media", 0: "Baja"}
-        return {"priority": priority_map[predicted_priority]}
+        logging.info(f"📋 Iniciando asignación de quirófanos: {len(request.scheduled_patients)} pacientes recibidos.")
+
+        # Separar pacientes en función del tipo de cirugía y prioridad
+        for patient in request.scheduled_patients:
+            if patient.surgery_type == 2:  # Fracturas de cadera
+                if len(afternoon_surgeries) < request.available_or_afternoon * request.max_patients_per_session:
+                    afternoon_surgeries.append(patient)
+                else:
+                    waiting_list.append(patient)
+            else:
+                if len(morning_surgeries) < request.available_or_morning * request.max_patients_per_session:
+                    morning_surgeries.append(patient)
+                else:
+                    waiting_list.append(patient)
+
+        logging.info(f"✅ Asignación completada: {len(morning_surgeries)} en la mañana, {len(afternoon_surgeries)} en la tarde.")
+        logging.info(f"⏳ Pacientes en lista de espera: {len(waiting_list)}")
+
+        return {
+            "morning_surgeries": [p.dict() for p in morning_surgeries],
+            "afternoon_surgeries": [p.dict() for p in afternoon_surgeries],
+            "waiting_list": [p.dict() for p in waiting_list]
+        }
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error en la predicción de prioridad: {str(e)}")
+        logging.error(f"❌ Error en la asignación de quirófanos: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Error en la generación de la programación: {str(e)}")
 
 @app.get("/")
 def root():
