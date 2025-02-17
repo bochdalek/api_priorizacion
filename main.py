@@ -62,6 +62,30 @@ app = FastAPI(
     swagger_ui_oauth2_redirect_url="/docs/oauth2-redirect",
 )
 
+# Agregar seguridad de autorización con JWT en Swagger
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    openapi_schema["components"]["securitySchemes"] = {
+        "bearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT"
+        }
+    }
+    openapi_schema["security"] = [{"bearerAuth": []}]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
+
 # Modelos para autenticación
 class User(BaseModel):
     email: str
