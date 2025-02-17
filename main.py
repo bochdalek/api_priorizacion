@@ -7,6 +7,8 @@ import jwt
 import os
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.openapi.models import OAuthFlows as OAuthFlowsModel, OAuth2 as OAuth2Model
+from fastapi.openapi.models import SecurityScheme as SecuritySchemeModel
 from pydantic import BaseModel, Field, validator
 from datetime import datetime, timedelta
 from typing import Literal, List, Dict, Optional
@@ -52,8 +54,30 @@ except Exception as e:
     model = None
     logging.error(f"⚠️ Error al cargar el modelo: {str(e)}")
 
-# Crear la API
-app = FastAPI()
+# Crear la API con configuración de seguridad en Swagger
+app = FastAPI(
+    title="API de Planificación Quirúrgica",
+    description="API para priorización y gestión de cirugías.",
+    version="1.0",
+    openapi_tags=[
+        {"name": "Auth", "description": "Endpoints de autenticación"},
+        {"name": "Admin", "description": "Funciones solo para administradores"},
+    ],
+    swagger_ui_oauth2_redirect_url="/docs/oauth2-redirect",
+)
+
+app.openapi_schema = {
+    "components": {
+        "securitySchemes": {
+            "bearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT"
+            }
+        }
+    },
+    "security": [{"bearerAuth": []}]
+}
 
 # Modelo para autenticación
 class User(BaseModel):
@@ -79,7 +103,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
 # Endpoint para login
-@app.post("/login", response_model=Token)
+@app.post("/login", response_model=Token, tags=["Auth"])
 def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = authenticate_user(form_data.username, form_data.password)
     if not user:
@@ -88,7 +112,7 @@ def login(form_data: OAuth2PasswordRequestForm = Depends()):
     return {"access_token": access_token, "token_type": "bearer"}
 
 # Endpoint para registrar un nuevo usuario (siempre como usuario estándar)
-@app.post("/register")
+@app.post("/register", tags=["Auth"])
 def register(user: User):
     if user.email in users_db:
         raise HTTPException(status_code=400, detail="El usuario ya existe")
@@ -119,14 +143,14 @@ async def get_admin_user(user: dict = Depends(get_current_user)):
     return user
 
 # Endpoint para convertir un usuario en administrador (solo accesible por admins)
-@app.post("/make_admin/{email}")
+@app.post("/make_admin/{email}", tags=["Admin"])
 def make_admin(email: str, admin: dict = Depends(get_admin_user)):
     if email not in users_db:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     users_db[email]["role"] = "admin"
     return {"message": f"El usuario {email} ahora es administrador"}
 
-@app.get("/admin-only")
+@app.get("/admin-only", tags=["Admin"])
 def admin_only(user: dict = Depends(get_admin_user)):
     return {"message": "Bienvenido, administrador"}
 
