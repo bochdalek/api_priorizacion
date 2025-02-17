@@ -7,3 +7,4 @@ scikit-learn
 bcrypt
 PyJWT
 python-dotenv
+python-multipart
