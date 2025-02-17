@@ -1,8 +1,8 @@
 import ssl
 import joblib
 import numpy as np
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field, validator
 from datetime import datetime, timedelta
 from typing import Literal
 
@@ -15,22 +15,47 @@ try:
 except FileNotFoundError:
     model = None
     print("⚠️ Error: El archivo prioritization_model.pkl no se encontró. Asegúrate de que el modelo está en la carpeta correcta.")
+except Exception as e:
+    model = None
+    print(f"⚠️ Error al cargar el modelo: {str(e)}")
 
 # Crear la API
 app = FastAPI()
 
-# Definir la estructura de datos esperada
+# Definir la estructura de datos esperada para predict_priority
 class CaseData(BaseModel):
-    urgency: int
-    time_since_injury: int
-    functional_impact: int
-    patient_condition: int
+    urgency: int = Field(..., ge=0, le=5)
+    time_since_injury: int = Field(..., ge=0, le=4)
+    functional_impact: int = Field(..., ge=0, le=3)
+    patient_condition: int = Field(..., ge=0, le=2)
     medication: Literal["Ninguna", "Antiagregante", "Anticoagulante", "AAS", "Clopidogrel", "Prasugrel", "Ticagrelor",
                         "Acenocumarol", "Warfarina", "Dabigatrán", "Rivaroxabán", "Apixabán", "Edoxabán"]
     last_medication_date: str
-    delay_days: int
-    surgery_type: int = 2  # Valor predeterminado
-    operating_room: int = 1  # Valor predeterminado
+    delay_days: int = Field(..., ge=0, le=6)
+    surgery_type: int = Field(2, ge=0, le=2)  # Valor predeterminado
+    operating_room: int = Field(1, ge=0, le=2)  # Valor predeterminado
+
+    @validator("last_medication_date")
+    def validate_date(cls, v):
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("Formato de fecha inválido, debe ser YYYY-MM-DD")
+        return v
+
+# Definir la estructura de datos esperada para predict_surgery_date
+class SurgeryDateRequest(BaseModel):
+    medication: Literal["AAS", "Clopidogrel", "Prasugrel", "Ticagrelor",
+                        "Acenocumarol", "Warfarina", "Dabigatrán", "Rivaroxabán", "Apixabán", "Edoxabán"]
+    last_medication_date: str
+
+    @validator("last_medication_date")
+    def validate_date(cls, v):
+        try:
+            datetime.strptime(v, "%Y-%m-%d")
+        except ValueError:
+            raise ValueError("Formato de fecha inválido, debe ser YYYY-MM-DD")
+        return v
 
 # Mapeo de medicamentos a valores numéricos
 medication_map = {
@@ -64,23 +89,23 @@ medication_suspension_days = {
 }
 
 @app.post("/predict_surgery_date")
-def predict_surgery_date(case: CaseData):
+def predict_surgery_date(request: SurgeryDateRequest):
     try:
         # Determinar días de suspensión necesarios
-        suspension_days = medication_suspension_days.get(case.medication, 0)
+        suspension_days = medication_suspension_days.get(request.medication, 0)
         
         # Calcular fecha óptima para cirugía
-        last_med_date = datetime.strptime(case.last_medication_date, "%Y-%m-%d")
+        last_med_date = datetime.strptime(request.last_medication_date, "%Y-%m-%d")
         surgery_date = last_med_date + timedelta(days=suspension_days)
         
         return {"surgery_date": surgery_date.strftime("%Y-%m-%d")}
     except Exception as e:
-        return {"error": f"Error en el cálculo de la fecha de cirugía: {str(e)}"}
+        raise HTTPException(status_code=400, detail=f"Error en el cálculo de la fecha de cirugía: {str(e)}")
 
 @app.post("/predict_priority")
 def predict_priority(case: CaseData):
     if model is None:
-        return {"error": "Modelo no encontrado. No se puede predecir prioridad."}
+        raise HTTPException(status_code=500, detail="Modelo no encontrado. No se puede predecir prioridad.")
     try:
         medication_value = medication_map.get(case.medication, -1)  # Convertir medicamento a número
         
@@ -95,7 +120,7 @@ def predict_priority(case: CaseData):
         priority_map = {3: "Urgente", 2: "Alta", 1: "Media", 0: "Baja"}
         return {"priority": priority_map[predicted_priority]}
     except Exception as e:
-        return {"error": f"Error en la predicción de prioridad: {str(e)}"}
+        raise HTTPException(status_code=400, detail=f"Error en la predicción de prioridad: {str(e)}")
 
 @app.get("/")
 def root():
