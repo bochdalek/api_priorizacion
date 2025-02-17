@@ -4,3 +4,4 @@ numpy
 pydantic
 joblib
 scikit-learn
+bcrypt
