@@ -5,3 +5,5 @@ pydantic
 joblib
 scikit-learn
 bcrypt
+PyJWT
+python-dotenv
