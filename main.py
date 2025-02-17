@@ -2,16 +2,45 @@ import ssl
 import joblib
 import numpy as np
 import logging
-from fastapi import FastAPI, HTTPException
+import bcrypt
+import jwt
+import os
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field, validator
 from datetime import datetime, timedelta
 from typing import Literal, List, Dict, Optional
+from dotenv import load_dotenv
+
+# Cargar variables de entorno
+load_dotenv()
 
 # Configurar logging para depuración
 logging.basicConfig(level=logging.INFO)
 
 # Asegurar compatibilidad con SSL
 ssl._create_default_https_context = ssl._create_unverified_context
+
+# Configuración de autenticación
+SECRET_KEY = os.getenv("SECRET_KEY", "supersecretkey")
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+
+# Base de datos temporal de usuarios
+users_db = {}
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
+
+# Crear usuario administrador inicial si no existe
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "adminpass")
+if ADMIN_EMAIL not in users_db:
+    users_db[ADMIN_EMAIL] = {
+        "username": "admin",
+        "hashed_password": bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode(),
+        "role": "admin"
+    }
+    logging.info("✅ Administrador creado automáticamente.")
 
 # Cargar el modelo entrenado con manejo de errores
 try:
@@ -26,55 +55,80 @@ except Exception as e:
 # Crear la API
 app = FastAPI()
 
-# Base de datos temporal
-no_programables = []
+# Modelo para autenticación
+class User(BaseModel):
+    email: str
+    password: str
 
-# Definir la estructura de datos esperada para predict_priority
-class CaseData(BaseModel):
-    id: int
-    urgency: int = Field(..., ge=0, le=5, strict=True)
-    time_since_injury: int = Field(..., ge=0, le=4, strict=True)
-    functional_impact: int = Field(..., ge=0, le=3, strict=True)
-    patient_condition: int = Field(..., ge=0, le=2, strict=True)
-    medication: Literal["Ninguna", "Antiagregante", "Anticoagulante", "AAS", "Clopidogrel", "Prasugrel", "Ticagrelor",
-                        "Acenocumarol", "Warfarina", "Dabigatrán", "Rivaroxabán", "Apixabán", "Edoxabán"]
-    last_medication_date: str
-    delay_days: int = Field(..., ge=0, le=6, strict=True)
-    surgery_type: int = Field(2, ge=0, le=2, strict=True)  # Valor predeterminado
-    operating_room: int = Field(1, ge=0, le=2, strict=True)  # Valor predeterminado
-    condition_reason: Optional[str] = None  # Motivo por el que es NO PROGRAMABLE
+class Token(BaseModel):
+    access_token: str
+    token_type: str
 
-    @validator("last_medication_date")
-    def validate_date(cls, v):
-        try:
-            date_obj = datetime.strptime(v, "%Y-%m-%d")
-            if date_obj > datetime.now():
-                raise ValueError("La fecha no puede ser en el futuro")
-        except ValueError:
-            raise ValueError("Formato de fecha inválido, debe ser YYYY-MM-DD")
-        return v
+# Función para autenticar usuario
+def authenticate_user(email: str, password: str):
+    user = users_db.get(email)
+    if not user or not bcrypt.checkpw(password.encode(), user["hashed_password"].encode()):
+        return None
+    return user
 
-# Endpoint para registrar pacientes como NO PROGRAMABLES
-@app.post("/no_programables")
-def add_no_programable(patient: CaseData):
-    no_programables.append(patient)
-    logging.info(f"🛑 Paciente {patient.id} agregado a NO PROGRAMABLES por: {patient.condition_reason}")
-    return {"message": "Paciente agregado a NO PROGRAMABLES", "patient": patient.dict()}
+# Función para generar token JWT
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# Endpoint para marcar a un paciente como programable y recalcular quirófanos
-@app.post("/marcar_programable/{patient_id}")
-def mark_as_programable(patient_id: int):
-    global no_programables
-    patient = next((p for p in no_programables if p.id == patient_id), None)
-    
-    if not patient:
-        raise HTTPException(status_code=404, detail="Paciente no encontrado en NO PROGRAMABLES")
-    
-    no_programables = [p for p in no_programables if p.id != patient_id]
-    logging.info(f"✅ Paciente {patient_id} marcado como PROGRAMABLE")
-    
-    # Aquí podemos agregar lógica para reprogramar automáticamente al paciente en quirófanos
-    return {"message": "Paciente marcado como PROGRAMABLE y reasignado"}
+# Endpoint para login
+@app.post("/login", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    access_token = create_access_token(data={"sub": form_data.username, "role": user["role"]})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# Endpoint para registrar un nuevo usuario (siempre como usuario estándar)
+@app.post("/register")
+def register(user: User):
+    if user.email in users_db:
+        raise HTTPException(status_code=400, detail="El usuario ya existe")
+    users_db[user.email] = {
+        "username": user.email.split("@")[0],
+        "hashed_password": bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode(),
+        "role": "user"  # Por defecto, todos los nuevos usuarios son estándar
+    }
+    return {"message": "Usuario registrado exitosamente"}
+
+# Dependencia para obtener usuario autenticado
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user = users_db.get(payload.get("sub"))
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuario no encontrado")
+        return user
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+# Dependencia para verificar si el usuario es administrador
+async def get_admin_user(user: dict = Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Acceso denegado: Se requieren permisos de administrador")
+    return user
+
+# Endpoint para convertir un usuario en administrador (solo accesible por admins)
+@app.post("/make_admin/{email}")
+def make_admin(email: str, admin: dict = Depends(get_admin_user)):
+    if email not in users_db:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    users_db[email]["role"] = "admin"
+    return {"message": f"El usuario {email} ahora es administrador"}
+
+@app.get("/admin-only")
+def admin_only(user: dict = Depends(get_admin_user)):
+    return {"message": "Bienvenido, administrador"}
 
 @app.get("/")
 def root():
