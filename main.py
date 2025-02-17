@@ -118,26 +118,37 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-# Endpoint para login
-@app.post("/login", response_model=Token, tags=["Auth"])
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = authenticate_user(form_data.username, form_data.password)
-    if not user:
-        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
-    access_token = create_access_token(data={"sub": form_data.username, "role": user["role"]})
-    return {"access_token": access_token, "token_type": "bearer"}
+# Dependencia para obtener usuario autenticado
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user = users_db.get(payload.get("sub"))
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuario no encontrado")
+        return user
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token inválido")
 
-# Endpoint para registrar un nuevo usuario (siempre como usuario estándar)
-@app.post("/register", tags=["Auth"])
-def register(user: User):
-    if user.email in users_db:
-        raise HTTPException(status_code=400, detail="El usuario ya existe")
-    users_db[user.email] = {
-        "username": user.email.split("@")[0],
-        "hashed_password": bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode(),
-        "role": "user"
-    }
-    return {"message": "Usuario registrado exitosamente"}
+# Dependencia para verificar si el usuario es administrador
+async def get_admin_user(user: dict = Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Acceso denegado: Se requieren permisos de administrador")
+    return user
+
+# Endpoint para acceso restringido solo a administradores
+@app.get("/admin-only", tags=["Admin"], dependencies=[Depends(get_admin_user)])
+def admin_only():
+    return {"message": "Bienvenido, administrador"}
+
+# Endpoint para convertir un usuario en administrador (solo accesible por admins)
+@app.post("/make_admin/{email}", tags=["Admin"], dependencies=[Depends(get_admin_user)])
+def make_admin(email: str):
+    if email not in users_db:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    users_db[email]["role"] = "admin"
+    return {"message": f"El usuario {email} ahora es administrador"}
 
 # Endpoint de prueba
 @app.get("/")
