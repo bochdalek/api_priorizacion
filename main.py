@@ -10,7 +10,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import Optional, List, Dict
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
@@ -28,7 +28,7 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 # Base de datos temporal de usuarios
-users_db = {}
+users_db: Dict[str, Dict] = {}
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login", scheme_name="Bearer")
 
@@ -95,6 +95,25 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
+# Función para verificar usuario autenticado
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        user = users_db.get(payload.get("sub"))
+        if not user:
+            raise HTTPException(status_code=401, detail="Usuario no encontrado")
+        return user
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expirado")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Token inválido")
+
+# Función para verificar si el usuario es administrador
+async def get_admin_user(user: Dict = Depends(get_current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Acceso denegado: Se requieren permisos de administrador")
+    return user
+
 # Endpoint para login
 @app.post("/login", response_model=Token, tags=["Auth"])
 def login(form_data: OAuth2PasswordRequestForm = Depends()):
@@ -117,16 +136,16 @@ def register(user: User):
     return {"message": "Usuario registrado exitosamente"}
 
 # Endpoint para convertir un usuario en administrador (solo accesible por admins)
-@app.post("/make_admin/{email}", tags=["Admin"], dependencies=[Depends(oauth2_scheme)])
-def make_admin(email: str):
+@app.post("/make_admin/{email}", tags=["Admin"])
+def make_admin(email: str, admin: Dict = Depends(get_admin_user)):
     if email not in users_db:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     users_db[email]["role"] = "admin"
     return {"message": f"El usuario {email} ahora es administrador"}
 
 # Endpoint para acceder solo como administrador
-@app.get("/admin-only", tags=["Admin"], dependencies=[Depends(oauth2_scheme)])
-def admin_only():
+@app.get("/admin-only", tags=["Admin"])
+def admin_only(user: Dict = Depends(get_admin_user)):
     return {"message": "Bienvenido, administrador"}
 
 # Endpoint de planificación quirúrgica
