@@ -30,7 +30,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60
 # Base de datos temporal de usuarios
 users_db = {}
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login", scheme_name="Bearer")
 
 # Crear usuario administrador inicial si no existe
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
@@ -62,6 +62,8 @@ app = FastAPI(
     swagger_ui_oauth2_redirect_url="/docs/oauth2-redirect",
 )
 
+# Definir OpenAPI para solucionar problemas de referencias
+
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
@@ -71,13 +73,20 @@ def custom_openapi():
         description=app.description,
         routes=app.routes,
     )
-    openapi_schema["components"] = {
-        "securitySchemes": {
-            "bearerAuth": {
-                "type": "http",
-                "scheme": "bearer",
-                "bearerFormat": "JWT"
+    openapi_schema["components"]["securitySchemes"] = {
+        "OAuth2PasswordBearer": {
+            "type": "oauth2",
+            "flows": {
+                "password": {
+                    "tokenUrl": "/login",
+                    "scopes": {}
+                }
             }
+        },
+        "bearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT"
         }
     }
     openapi_schema["security"] = [{"bearerAuth": []}]
