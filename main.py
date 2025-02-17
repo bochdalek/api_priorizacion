@@ -7,11 +7,10 @@ import jwt
 import os
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.openapi.models import OAuthFlows as OAuthFlowsModel, OAuth2 as OAuth2Model
-from fastapi.openapi.models import SecurityScheme as SecuritySchemeModel
-from pydantic import BaseModel, Field, validator
+from fastapi.openapi.utils import get_openapi
+from pydantic import BaseModel
 from datetime import datetime, timedelta
-from typing import Literal, List, Dict, Optional
+from typing import Optional
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
@@ -36,7 +35,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 # Crear usuario administrador inicial si no existe
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "adminpass")
-if ADMIN_EMAIL not in users_db:
+if ADMIN_EMAIL and ADMIN_PASSWORD and ADMIN_EMAIL not in users_db:
     users_db[ADMIN_EMAIL] = {
         "username": "admin",
         "hashed_password": bcrypt.hashpw(ADMIN_PASSWORD.encode(), bcrypt.gensalt()).decode(),
@@ -59,15 +58,20 @@ app = FastAPI(
     title="API de Planificación Quirúrgica",
     description="API para priorización y gestión de cirugías.",
     version="1.0",
-    openapi_tags=[
-        {"name": "Auth", "description": "Endpoints de autenticación"},
-        {"name": "Admin", "description": "Funciones solo para administradores"},
-    ],
+    openapi_version="3.0.2",
     swagger_ui_oauth2_redirect_url="/docs/oauth2-redirect",
 )
 
-app.openapi_schema = {
-    "components": {
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    openapi_schema["components"] = {
         "securitySchemes": {
             "bearerAuth": {
                 "type": "http",
@@ -75,11 +79,14 @@ app.openapi_schema = {
                 "bearerFormat": "JWT"
             }
         }
-    },
-    "security": [{"bearerAuth": []}]
-}
+    }
+    openapi_schema["security"] = [{"bearerAuth": []}]
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
 
-# Modelo para autenticación
+app.openapi = custom_openapi
+
+# Modelos para autenticación
 class User(BaseModel):
     email: str
     password: str
@@ -119,41 +126,11 @@ def register(user: User):
     users_db[user.email] = {
         "username": user.email.split("@")[0],
         "hashed_password": bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode(),
-        "role": "user"  # Por defecto, todos los nuevos usuarios son estándar
+        "role": "user"
     }
     return {"message": "Usuario registrado exitosamente"}
 
-# Dependencia para obtener usuario autenticado
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user = users_db.get(payload.get("sub"))
-        if not user:
-            raise HTTPException(status_code=401, detail="Usuario no encontrado")
-        return user
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expirado")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Token inválido")
-
-# Dependencia para verificar si el usuario es administrador
-async def get_admin_user(user: dict = Depends(get_current_user)):
-    if user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Acceso denegado: Se requieren permisos de administrador")
-    return user
-
-# Endpoint para convertir un usuario en administrador (solo accesible por admins)
-@app.post("/make_admin/{email}", tags=["Admin"])
-def make_admin(email: str, admin: dict = Depends(get_admin_user)):
-    if email not in users_db:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    users_db[email]["role"] = "admin"
-    return {"message": f"El usuario {email} ahora es administrador"}
-
-@app.get("/admin-only", tags=["Admin"])
-def admin_only(user: dict = Depends(get_admin_user)):
-    return {"message": "Bienvenido, administrador"}
-
+# Endpoint de prueba
 @app.get("/")
 def root():
     return {"message": "API de planificación quirúrgica en funcionamiento"}
