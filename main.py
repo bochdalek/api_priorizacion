@@ -1,11 +1,11 @@
 import ssl
 import joblib
-import numpy as np
+import np
 import logging
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field, validator
 from datetime import datetime, timedelta
-from typing import Literal, List, Dict, Optional
+from typing import Literal, List, Optional
 
 # Configurar logging para depuración
 logging.basicConfig(level=logging.INFO)
@@ -26,8 +26,12 @@ except Exception as e:
 # Crear la API
 app = FastAPI()
 
+# Base de datos temporal
+no_programables = []
+
 # Definir la estructura de datos esperada para predict_priority
 class CaseData(BaseModel):
+    id: int
     urgency: int = Field(..., ge=0, le=5, strict=True)
     time_since_injury: int = Field(..., ge=0, le=4, strict=True)
     functional_impact: int = Field(..., ge=0, le=3, strict=True)
@@ -38,6 +42,7 @@ class CaseData(BaseModel):
     delay_days: int = Field(..., ge=0, le=6, strict=True)
     surgery_type: int = Field(2, ge=0, le=2, strict=True)  # Valor predeterminado
     operating_room: int = Field(1, ge=0, le=2, strict=True)  # Valor predeterminado
+    condition_reason: Optional[str] = None  # Motivo por el que es NO PROGRAMABLE
 
     @validator("last_medication_date")
     def validate_date(cls, v):
@@ -49,47 +54,36 @@ class CaseData(BaseModel):
             raise ValueError("Formato de fecha inválido, debe ser YYYY-MM-DD")
         return v
 
-# Definir la estructura de datos esperada para la programación quirúrgica
-class SurgeryScheduleRequest(BaseModel):
-    scheduled_patients: List[CaseData]
-    available_or_morning: int = 2
-    available_or_afternoon: int = 1
-    max_patients_per_session: int = 2
+def find_patient(patient_id: int):
+    """Función para encontrar un paciente en la lista de no programables.""" un paciente en la lista de no programables."""
+    return next((p for p in no_programables if p.id == patient_id), None)s if p.id == patient_id), None)
 
-@app.post("/generate_schedule")
-def generate_schedule(request: SurgeryScheduleRequest):
-    try:
-        morning_surgeries = []
-        afternoon_surgeries = []
-        waiting_list = []
+# Endpoint para registrar pacientes como NO PROGRAMABLES
+@app.post("/no_programables")
+def add_no_programable(patient: CaseData):def add_no_programable(patient: CaseData):
+    no_programables.append(patient)
+    logging.info(f"🛑 Paciente {patient.id} agregado a NO PROGRAMABLES por: {patient.condition_reason}")gregado a NO PROGRAMABLES por: {patient.condition_reason}")
+    return {"message": "Paciente agregado a NO PROGRAMABLES", "patient": patient.dict()} a NO PROGRAMABLES", "patient": patient.dict()}
 
-        logging.info(f"📋 Iniciando asignación de quirófanos: {len(request.scheduled_patients)} pacientes recibidos.")
+# Endpoint para marcar a un paciente como programable y recalcular quirófanoss
+@app.post("/marcar_programable/{patient_id}").post("/marcar_programable/{patient_id}")
+def mark_as_programable(patient_id: int):able(patient_id: int):
+    global no_programables
+    patient = find_patient(patient_id)patient = find_patient(patient_id)
+    
+    if not patient:
+        raise HTTPException(status_code=404, detail="Paciente no encontrado en NO PROGRAMABLES")    raise HTTPException(status_code=404, detail="Paciente no encontrado en NO PROGRAMABLES")
+    
+    no_programables = [p for p in no_programables if p.id != patient_id]
+    logging.info(f"✅ Paciente {patient_id} marcado como PROGRAMABLE")    logging.info(f"✅ Paciente {patient_id} marcado como PROGRAMABLE")
+    
+    # Aquí podemos agregar lógica para reprogramar automáticamente al paciente en quirófanospodemos agregar lógica para reprogramar automáticamente al paciente en quirófanos
+    return {"message": "Paciente marcado como PROGRAMABLE y reasignado"}
 
-        # Separar pacientes en función del tipo de cirugía y prioridad
-        for patient in request.scheduled_patients:
-            if patient.surgery_type == 2:  # Fracturas de cadera
-                if len(afternoon_surgeries) < request.available_or_afternoon * request.max_patients_per_session:
-                    afternoon_surgeries.append(patient)
-                else:
-                    waiting_list.append(patient)
-            else:
-                if len(morning_surgeries) < request.available_or_morning * request.max_patients_per_session:
-                    morning_surgeries.append(patient)
-                else:
-                    waiting_list.append(patient)
 
-        logging.info(f"✅ Asignación completada: {len(morning_surgeries)} en la mañana, {len(afternoon_surgeries)} en la tarde.")
-        logging.info(f"⏳ Pacientes en lista de espera: {len(waiting_list)}")
 
-        return {
-            "morning_surgeries": [p.dict() for p in morning_surgeries],
-            "afternoon_surgeries": [p.dict() for p in afternoon_surgeries],
-            "waiting_list": [p.dict() for p in waiting_list]
-        }
-    except Exception as e:
-        logging.error(f"❌ Error en la asignación de quirófanos: {str(e)}")
-        raise HTTPException(status_code=400, detail=f"Error en la generación de la programación: {str(e)}")
 
-@app.get("/")
+
+    return {"message": "API de planificación quirúrgica en funcionamiento"}def root():@app.get("/")@app.get("/")
 def root():
     return {"message": "API de planificación quirúrgica en funcionamiento"}
