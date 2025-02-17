@@ -8,7 +8,7 @@ import os
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.openapi.utils import get_openapi
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 from typing import Optional, List
 from dotenv import load_dotenv
@@ -62,88 +62,58 @@ app = FastAPI(
     swagger_ui_oauth2_redirect_url="/docs/oauth2-redirect",
 )
 
-# Definir OpenAPI para solucionar problemas de referencias
+# Modelos para planificación quirúrgica
+class CaseData(BaseModel):
+    urgency: int = Field(..., ge=0, le=5, strict=True)
+    time_since_injury: int = Field(..., ge=0, le=4, strict=True)
+    functional_impact: int = Field(..., ge=0, le=3, strict=True)
+    patient_condition: int = Field(..., ge=0, le=2, strict=True)
+    medication: str
+    last_medication_date: str
+    delay_days: int = Field(..., ge=0, le=6, strict=True)
+    surgery_type: int = Field(2, ge=0, le=2, strict=True)
+    operating_room: int = Field(1, ge=0, le=2, strict=True)
 
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-    openapi_schema["components"]["securitySchemes"] = {
-        "OAuth2PasswordBearer": {
-            "type": "oauth2",
-            "flows": {
-                "password": {
-                    "tokenUrl": "/login",
-                    "scopes": {}
-                }
-            }
-        },
-        "bearerAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT"
-        }
-    }
-    openapi_schema["security"] = [{"bearerAuth": []}]
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
+class SurgeryScheduleRequest(BaseModel):
+    scheduled_patients: List[CaseData]
+    available_or_morning: int = 2
+    available_or_afternoon: int = 1
+    max_patients_per_session: int = 2
 
-app.openapi = custom_openapi
-
-# Modelos para autenticación
-class User(BaseModel):
-    email: str
-    password: str
-
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-# Función para autenticar usuario
-def authenticate_user(email: str, password: str):
-    user = users_db.get(email)
-    if not user or not bcrypt.checkpw(password.encode(), user["hashed_password"].encode()):
-        return None
-    return user
-
-# Función para generar token JWT
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-# Dependencia para obtener usuario autenticado
-async def get_current_user(token: str = Depends(oauth2_scheme)):
+@app.post("/generate_schedule")
+def generate_schedule(request: SurgeryScheduleRequest):
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user = users_db.get(payload.get("sub"))
-        if not user:
-            raise HTTPException(status_code=401, detail="Usuario no encontrado")
-        return user
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expirado")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Token inválido")
+        morning_surgeries = []
+        afternoon_surgeries = []
+        waiting_list = []
 
-# Dependencia para verificar si el usuario es administrador
-async def get_admin_user(user: dict = Depends(get_current_user)):
-    if user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Acceso denegado: Se requieren permisos de administrador")
-    return user
+        for patient in request.scheduled_patients:
+            if patient.surgery_type == 2:  # Fracturas de cadera
+                if len(afternoon_surgeries) < request.available_or_afternoon * request.max_patients_per_session:
+                    afternoon_surgeries.append(patient)
+                else:
+                    waiting_list.append(patient)
+            else:
+                if len(morning_surgeries) < request.available_or_morning * request.max_patients_per_session:
+                    morning_surgeries.append(patient)
+                else:
+                    waiting_list.append(patient)
+
+        return {
+            "morning_surgeries": [p.dict() for p in morning_surgeries],
+            "afternoon_surgeries": [p.dict() for p in afternoon_surgeries],
+            "waiting_list": [p.dict() for p in waiting_list]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error en la generación de la programación: {str(e)}")
 
 # Endpoint para acceso restringido solo a administradores
-@app.get("/admin-only", tags=["Admin"], dependencies=[Depends(get_admin_user)])
+@app.get("/admin-only", tags=["Admin"], dependencies=[Depends(oauth2_scheme)])
 def admin_only():
     return {"message": "Bienvenido, administrador"}
 
 # Endpoint para convertir un usuario en administrador (solo accesible por admins)
-@app.post("/make_admin/{email}", tags=["Admin"], dependencies=[Depends(get_admin_user)])
+@app.post("/make_admin/{email}", tags=["Admin"], dependencies=[Depends(oauth2_scheme)])
 def make_admin(email: str):
     if email not in users_db:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
