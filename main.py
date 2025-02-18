@@ -7,10 +7,9 @@ import jwt
 import os
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.openapi.utils import get_openapi
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+from typing import Optional, List
 from dotenv import load_dotenv
 
 # Cargar variables de entorno
@@ -28,13 +27,13 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 # Base de datos temporal de usuarios
-users_db: Dict[str, Dict] = {}
+users_db = {}
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login", scheme_name="Bearer")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 # Crear usuario administrador inicial si no existe
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@example.com")
-ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "adminpass")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "adminpassword")
 if ADMIN_EMAIL and ADMIN_PASSWORD and ADMIN_EMAIL not in users_db:
     users_db[ADMIN_EMAIL] = {
         "username": "admin",
@@ -53,38 +52,8 @@ except Exception as e:
     model = None
     logging.error(f"⚠️ Error al cargar el modelo: {str(e)}")
 
-# Crear la API con configuración de seguridad en Swagger
-app = FastAPI(
-    title="API de Planificación Quirúrgica",
-    description="API para priorización y gestión de cirugías.",
-    version="1.0",
-    openapi_version="3.0.2",
-    swagger_ui_oauth2_redirect_url="/docs/oauth2-redirect",
-)
-
-# Agregar seguridad de autorización con JWT en Swagger
-
-def custom_openapi():
-    if app.openapi_schema:
-        return app.openapi_schema
-    openapi_schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-    openapi_schema["components"]["securitySchemes"] = {
-        "bearerAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT"
-        }
-    }
-    openapi_schema["security"] = [{"bearerAuth": []}]
-    app.openapi_schema = openapi_schema
-    return app.openapi_schema
-
-app.openapi = custom_openapi
+# Crear la API
+app = FastAPI()
 
 # Modelos para autenticación
 class User(BaseModel):
@@ -95,7 +64,60 @@ class Token(BaseModel):
     access_token: str
     token_type: str
 
-# Función para verificar usuario autenticado
+# Modelos para la planificación quirúrgica
+class CaseData(BaseModel):
+    urgency: int = Field(..., ge=0, le=5, strict=True)
+    time_since_injury: int = Field(..., ge=0, le=4, strict=True)
+    functional_impact: int = Field(..., ge=0, le=3, strict=True)
+    patient_condition: int = Field(..., ge=0, le=2, strict=True)
+    medication: str
+    last_medication_date: str
+    delay_days: int = Field(..., ge=0, le=6, strict=True)
+    surgery_type: int = Field(2, ge=0, le=2, strict=True)
+    operating_room: int = Field(1, ge=0, le=2, strict=True)
+
+class SurgeryScheduleRequest(BaseModel):
+    scheduled_patients: List[CaseData]
+    available_or_morning: int = 2
+    available_or_afternoon: int = 1
+    max_patients_per_session: int = 2
+
+# Función para autenticar usuario
+def authenticate_user(email: str, password: str):
+    user = users_db.get(email)
+    if not user or not bcrypt.checkpw(password.encode(), user["hashed_password"].encode()):
+        return None
+    return user
+
+# Función para generar token JWT
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+    to_encode = data.copy()
+    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+    to_encode.update({"exp": expire})
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+# Endpoint para login
+@app.post("/login", response_model=Token)
+def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+    access_token = create_access_token(data={"sub": form_data.username, "role": user["role"]})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# Endpoint para registrar un nuevo usuario
+@app.post("/register")
+def register(user: User):
+    if user.email in users_db:
+        raise HTTPException(status_code=400, detail="El usuario ya existe")
+    users_db[user.email] = {
+        "username": user.email.split("@")[0],
+        "hashed_password": bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode(),
+        "role": "user"
+    }
+    return {"message": "Usuario registrado exitosamente"}
+
+# Dependencia para obtener usuario autenticado
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
@@ -108,52 +130,37 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token inválido")
 
-# Función para verificar si el usuario es administrador
-async def get_admin_user(user: Dict = Depends(get_current_user)):
+# Dependencia para verificar si el usuario es administrador
+async def get_admin_user(user: dict = Depends(get_current_user)):
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Acceso denegado: Se requieren permisos de administrador")
     return user
 
-# Endpoint para login
-@app.post("/login", response_model=Token, tags=["Auth"])
-def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = users_db.get(form_data.username)
-    if not user or not bcrypt.checkpw(form_data.password.encode(), user["hashed_password"].encode()):
-        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
-    access_token = jwt.encode({"sub": form_data.username, "role": user["role"]}, SECRET_KEY, algorithm=ALGORITHM)
-    return {"access_token": access_token, "token_type": "bearer"}
-
-# Endpoint para registrar un nuevo usuario
-@app.post("/register", tags=["Auth"])
-def register(user: User):
-    if user.email in users_db:
-        raise HTTPException(status_code=400, detail="El usuario ya existe")
-    users_db[user.email] = {
-        "username": user.email.split("@")[0],
-        "hashed_password": bcrypt.hashpw(user.password.encode(), bcrypt.gensalt()).decode(),
-        "role": "user"
-    }
-    return {"message": "Usuario registrado exitosamente"}
-
-# Endpoint para convertir un usuario en administrador (solo accesible por admins)
-@app.post("/make_admin/{email}", tags=["Admin"])
-def make_admin(email: str, admin: Dict = Depends(get_admin_user)):
-    if email not in users_db:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    users_db[email]["role"] = "admin"
-    return {"message": f"El usuario {email} ahora es administrador"}
-
-# Endpoint para acceder solo como administrador
-@app.get("/admin-only", tags=["Admin"])
-def admin_only(user: Dict = Depends(get_admin_user)):
-    return {"message": "Bienvenido, administrador"}
-
-# Endpoint de planificación quirúrgica
+# Endpoint para la planificación quirúrgica
 @app.post("/generate_schedule")
-def generate_schedule(request: List[dict]):
-    return {"message": "Generación de planificación en desarrollo", "data": request}
+def generate_schedule(request: SurgeryScheduleRequest):
+    morning_surgeries = []
+    afternoon_surgeries = []
+    waiting_list = []
 
-# Endpoint de prueba
+    for patient in request.scheduled_patients:
+        if patient.surgery_type == 2:
+            if len(afternoon_surgeries) < request.available_or_afternoon * request.max_patients_per_session:
+                afternoon_surgeries.append(patient)
+            else:
+                waiting_list.append(patient)
+        else:
+            if len(morning_surgeries) < request.available_or_morning * request.max_patients_per_session:
+                morning_surgeries.append(patient)
+            else:
+                waiting_list.append(patient)
+
+    return {
+        "morning_surgeries": [p.dict() for p in morning_surgeries],
+        "afternoon_surgeries": [p.dict() for p in afternoon_surgeries],
+        "waiting_list": [p.dict() for p in waiting_list]
+    }
+
 @app.get("/")
 def root():
     return {"message": "API de planificación quirúrgica en funcionamiento"}
