@@ -127,7 +127,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         user = users_db.get(payload.get("sub"))
         if not user:
             raise HTTPException(status_code=401, detail="Usuario no encontrado")
-        return user
+        return UserOut(email=user["username"], role=user["role"])
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expirado")
     except jwt.InvalidTokenError:
