@@ -1,6 +1,6 @@
+# filepath: /Users/miguelangelgonzalezlopez/Documents/api_priorizacion/main.py
 import ssl
 import joblib
-import numpy as np
 import logging
 import bcrypt
 import jwt
