@@ -117,24 +117,20 @@ def register(user: User):
     }
     return {"message": "Usuario registrado exitosamente"}
 
-# Dependencia para obtener usuario autenticado
-async def get_current_user(token: str = Depends(oauth2_scheme)):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user = users_db.get(payload.get("sub"))
-        if not user:
-            raise HTTPException(status_code=401, detail="Usuario no encontrado")
-        return user
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expirado")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Token inválido")
+# Endpoint para convertir un usuario en administrador
+@app.post("/make_admin/{email}")
+def make_admin(email: str, admin: dict = Depends()):
+    if email not in users_db:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    users_db[email]["role"] = "admin"
+    return {"message": f"El usuario {email} ahora es administrador"}
 
-# Dependencia para verificar si el usuario es administrador
-async def get_admin_user(user: dict = Depends(get_current_user)):
+# Endpoint de solo administradores
+@app.get("/admin-only")
+def admin_only(user: dict = Depends()):
     if user["role"] != "admin":
         raise HTTPException(status_code=403, detail="Acceso denegado: Se requieren permisos de administrador")
-    return user
+    return {"message": "Bienvenido, administrador"}
 
 # Endpoint para la planificación quirúrgica
 @app.post("/generate_schedule")
