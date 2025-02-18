@@ -121,19 +121,6 @@ def register(user: User):
     }
     return {"message": "Usuario registrado exitosamente"}
 
-# Dependencia para obtener usuario autenticado
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserOut:
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user = users_db.get(payload.get("sub"))
-        if not user:
-            raise HTTPException(status_code=401, detail="Usuario no encontrado")
-        return UserOut(email=payload.get("sub"), role=user["role"])
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expirado")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Token inválido")
-
 # Endpoint para convertir un usuario en administrador
 @app.post("/make_admin/{email}")
 def make_admin(email: str, admin: UserOut = Depends(get_current_user)):
@@ -150,6 +137,31 @@ def admin_only(user: UserOut = Depends(get_current_user)):
     if user.role != "admin":
         raise HTTPException(status_code=403, detail="Acceso denegado: Se requieren permisos de administrador")
     return {"message": "Bienvenido, administrador"}
+
+# Endpoint para la planificación quirúrgica
+@app.post("/generate_schedule")
+def generate_schedule(request: SurgeryScheduleRequest):
+    morning_surgeries = []
+    afternoon_surgeries = []
+    waiting_list = []
+
+    for patient in request.scheduled_patients:
+        if patient.surgery_type == 2:
+            if len(afternoon_surgeries) < request.available_or_afternoon * request.max_patients_per_session:
+                afternoon_surgeries.append(patient)
+            else:
+                waiting_list.append(patient)
+        else:
+            if len(morning_surgeries) < request.available_or_morning * request.max_patients_per_session:
+                morning_surgeries.append(patient)
+            else:
+                waiting_list.append(patient)
+
+    return {
+        "morning_surgeries": [p.dict() for p in morning_surgeries],
+        "afternoon_surgeries": [p.dict() for p in afternoon_surgeries],
+        "waiting_list": [p.dict() for p in waiting_list]
+    }
 
 @app.get("/")
 def root():
